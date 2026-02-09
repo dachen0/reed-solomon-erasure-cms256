@@ -33,9 +33,9 @@ mod errors;
 mod matrix;
 
 #[cfg(feature = "std")]
-mod cm256_ffi;
-#[cfg(feature = "std")]
 pub mod cm256;
+#[cfg(feature = "std")]
+mod cm256_ffi;
 
 #[cfg(test)]
 mod tests;

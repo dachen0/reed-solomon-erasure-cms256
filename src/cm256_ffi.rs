@@ -56,10 +56,7 @@ extern "C" {
     /// blocks are replaced with the reconstructed original data and their
     /// index is updated.
     /// Returns 0 on success.
-    pub fn cm256_decode(
-        params: CM256EncoderParams,
-        blocks: *mut CM256Block,
-    ) -> c_int;
+    pub fn cm256_decode(params: CM256EncoderParams, blocks: *mut CM256Block) -> c_int;
 }
 
 /// Initialize cm256. Must be called once before any other cm256 function.

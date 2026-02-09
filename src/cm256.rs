@@ -153,8 +153,7 @@ impl CM256ReedSolomon {
         let params = self.params(shard_size);
 
         // Stack-allocated block descriptors (avoids heap alloc for ≤32 shards).
-        let mut blocks: SmallVec<[CM256Block; 32]> =
-            SmallVec::with_capacity(self.data_shard_count);
+        let mut blocks: SmallVec<[CM256Block; 32]> = SmallVec::with_capacity(self.data_shard_count);
         for (i, d) in data.iter().enumerate() {
             blocks.push(CM256Block {
                 block: d.as_ref().as_ptr() as *mut c_void,
@@ -233,12 +232,18 @@ impl CM256ReedSolomon {
     // ------------------------------------------------------------------
 
     /// Reconstruct all missing shards in-place.
-    pub fn reconstruct<T: AsRef<[u8]> + AsMut<[u8]>>(&self, shards: &mut [(T, bool)]) -> Result<(), Error> {
+    pub fn reconstruct<T: AsRef<[u8]> + AsMut<[u8]>>(
+        &self,
+        shards: &mut [(T, bool)],
+    ) -> Result<(), Error> {
         self.reconstruct_internal(shards, false)
     }
 
     /// Reconstruct only missing data shards.
-    pub fn reconstruct_data<T: AsRef<[u8]> + AsMut<[u8]>>(&self, shards: &mut [(T, bool)]) -> Result<(), Error> {
+    pub fn reconstruct_data<T: AsRef<[u8]> + AsMut<[u8]>>(
+        &self,
+        shards: &mut [(T, bool)],
+    ) -> Result<(), Error> {
         self.reconstruct_internal(shards, true)
     }
 
@@ -291,36 +296,39 @@ impl CM256ReedSolomon {
             let mut blocks: SmallVec<[CM256Block; 32]> =
                 SmallVec::with_capacity(self.data_shard_count);
 
-            // Track (block_position, owned_vec) so we can move the Vec —
-            // already modified in-place by cm256 — directly into the correct
-            // shard slot with zero extra allocation or memcpy.
-            let mut recovery_entries: SmallVec<[(usize, Vec<u8>); 32]> =
-                SmallVec::with_capacity(data_missing.len());
+            // Split into data / parity halves so we can simultaneously read
+            // recovery (parity) shards and write into missing data shards
+            // without conflicting borrows.
+            let (data_shards, parity_shards) = shards.split_at_mut(self.data_shard_count);
 
-            let mut recovery_iter = self.data_shard_count..self.total_shard_count;
+            let mut recovery_iter = 0..self.parity_shard_count;
             for i in 0..self.data_shard_count {
-                if shards[i].1 {
+                if data_shards[i].1 {
                     blocks.push(CM256Block {
-                        block: shards[i].0.as_ref().as_ptr() as *mut c_void,
+                        block: data_shards[i].0.as_ref().as_ptr() as *mut c_void,
                         index: i as u8,
                     });
                 } else {
-                    let recov_idx = loop {
-                        let ri = recovery_iter.next().expect("not enough recovery shards");
-                        if shards[ri].1 {
-                            break ri;
+                    let parity_local = loop {
+                        let pi = recovery_iter.next().expect("not enough recovery shards");
+                        if parity_shards[pi].1 {
+                            break pi;
                         }
                     };
-                    // Clone rather than take: leaving the parity slot intact
-                    // avoids triggering an expensive full parity re-encode
-                    // when all data shards are lost (Reconstruct All).
-                    let mut buf = shards[recov_idx].0.as_ref().to_vec();
-                    let block_pos = blocks.len();
+                    let recov_global = self.data_shard_count + parity_local;
+
+                    // Copy recovery data directly into the target shard's
+                    // pre-allocated buffer.  cm256_decode will then decode
+                    // in-place.
+                    data_shards[i]
+                        .0
+                        .as_mut()
+                        .copy_from_slice(parity_shards[parity_local].0.as_ref());
+
                     blocks.push(CM256Block {
-                        block: buf.as_mut_ptr() as *mut c_void,
-                        index: recov_idx as u8,
+                        block: data_shards[i].0.as_mut().as_mut_ptr() as *mut c_void,
+                        index: recov_global as u8,
                     });
-                    recovery_entries.push((block_pos, buf));
                 }
             }
 
@@ -328,12 +336,7 @@ impl CM256ReedSolomon {
             if rc != 0 {
                 return Err(Error::TooFewShardsPresent);
             }
-
-            // Move the decoded buffers directly into the correct shard slots.
-            for (block_pos, buf) in recovery_entries {
-                let orig_i = blocks[block_pos].index as usize;
-                shards[orig_i].0.as_mut().copy_from_slice(&buf);
-            }
+            // Decoded data is already in the correct shard buffers.
         }
 
         // ---- Recompute only the missing PARITY shards ----
@@ -351,30 +354,22 @@ impl CM256ReedSolomon {
                 let mut blocks: SmallVec<[CM256Block; 32]> =
                     SmallVec::with_capacity(self.data_shard_count);
                 for i in 0..self.data_shard_count {
-                    let v = shards[i].0.as_ref();
                     blocks.push(CM256Block {
-                        block: v.as_ptr() as *mut c_void,
+                        block: shards[i].0.as_ref().as_ptr() as *mut c_void,
                         index: i as u8,
                     });
                 }
 
-                // Allocate buffers for just the missing parity shards and
-                // encode directly into them.
-                let mut bufs: SmallVec<[Vec<u8>; 32]> =
-                    SmallVec::with_capacity(parity_missing.len());
-                let mut targets: SmallVec<[(usize, *mut u8); 32]> =
-                    SmallVec::with_capacity(parity_missing.len());
-
+                // Encode directly into each missing parity shard's buffer.
                 for &idx in &parity_missing {
-                    bufs.push(vec![0u8; shard_size]);
-                    let ptr = bufs.last_mut().unwrap().as_mut_ptr();
-                    targets.push((idx - self.data_shard_count, ptr));
-                }
-
-                Self::encode_blocks_into(params, &mut blocks, self.data_shard_count, &targets);
-
-                for (buf, &idx) in bufs.into_iter().zip(parity_missing.iter()) {
-                    shards[idx].0.as_mut().copy_from_slice(&buf);
+                    unsafe {
+                        cm256_ffi::cm256_encode_block(
+                            params,
+                            blocks.as_mut_ptr(),
+                            idx as _,
+                            shards[idx].0.as_mut().as_mut_ptr() as *mut c_void,
+                        );
+                    }
                 }
             }
         }
