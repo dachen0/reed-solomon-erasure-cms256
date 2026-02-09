@@ -233,18 +233,18 @@ impl CM256ReedSolomon {
     // ------------------------------------------------------------------
 
     /// Reconstruct all missing shards in-place.
-    pub fn reconstruct(&self, shards: &mut [Option<Vec<u8>>]) -> Result<(), Error> {
+    pub fn reconstruct<T: AsRef<[u8]> + AsMut<[u8]>>(&self, shards: &mut [(T, bool)]) -> Result<(), Error> {
         self.reconstruct_internal(shards, false)
     }
 
     /// Reconstruct only missing data shards.
-    pub fn reconstruct_data(&self, shards: &mut [Option<Vec<u8>>]) -> Result<(), Error> {
+    pub fn reconstruct_data<T: AsRef<[u8]> + AsMut<[u8]>>(&self, shards: &mut [(T, bool)]) -> Result<(), Error> {
         self.reconstruct_internal(shards, true)
     }
 
-    fn reconstruct_internal(
+    fn reconstruct_internal<T: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
-        shards: &mut [Option<Vec<u8>>],
+        shards: &mut [(T, bool)],
         data_only: bool,
     ) -> Result<(), Error> {
         self.check_all(shards.len())?;
@@ -252,17 +252,17 @@ impl CM256ReedSolomon {
         // Determine shard_size from the first present shard.
         let mut shard_size: Option<usize> = None;
         let mut present = 0usize;
-        for s in shards.iter() {
-            if let Some(ref v) = s {
-                if v.is_empty() {
+        for (s, exists) in shards.iter() {
+            if *exists {
+                if s.as_ref().is_empty() {
                     return Err(Error::EmptyShard);
                 }
                 if let Some(sz) = shard_size {
-                    if v.len() != sz {
+                    if s.as_ref().len() != sz {
                         return Err(Error::IncorrectShardSize);
                     }
                 }
-                shard_size = Some(v.len());
+                shard_size = Some(s.as_ref().len());
                 present += 1;
             }
         }
@@ -281,7 +281,7 @@ impl CM256ReedSolomon {
         let mut data_missing: SmallVec<[usize; 32]> =
             SmallVec::with_capacity(self.data_shard_count);
         for i in 0..self.data_shard_count {
-            if shards[i].is_none() {
+            if !shards[i].1 {
                 data_missing.push(i);
             }
         }
@@ -299,22 +299,22 @@ impl CM256ReedSolomon {
 
             let mut recovery_iter = self.data_shard_count..self.total_shard_count;
             for i in 0..self.data_shard_count {
-                if let Some(ref v) = shards[i] {
+                if shards[i].1 {
                     blocks.push(CM256Block {
-                        block: v.as_ptr() as *mut c_void,
+                        block: shards[i].0.as_ref().as_ptr() as *mut c_void,
                         index: i as u8,
                     });
                 } else {
                     let recov_idx = loop {
                         let ri = recovery_iter.next().expect("not enough recovery shards");
-                        if shards[ri].is_some() {
+                        if shards[ri].1 {
                             break ri;
                         }
                     };
                     // Clone rather than take: leaving the parity slot intact
                     // avoids triggering an expensive full parity re-encode
                     // when all data shards are lost (Reconstruct All).
-                    let mut buf = shards[recov_idx].as_ref().unwrap().clone();
+                    let mut buf = shards[recov_idx].0.as_ref().to_vec();
                     let block_pos = blocks.len();
                     blocks.push(CM256Block {
                         block: buf.as_mut_ptr() as *mut c_void,
@@ -332,7 +332,7 @@ impl CM256ReedSolomon {
             // Move the decoded buffers directly into the correct shard slots.
             for (block_pos, buf) in recovery_entries {
                 let orig_i = blocks[block_pos].index as usize;
-                shards[orig_i] = Some(buf);
+                shards[orig_i].0.as_mut().copy_from_slice(&buf);
             }
         }
 
@@ -341,7 +341,7 @@ impl CM256ReedSolomon {
             let mut parity_missing: SmallVec<[usize; 32]> =
                 SmallVec::with_capacity(self.parity_shard_count);
             for i in self.data_shard_count..self.total_shard_count {
-                if shards[i].is_none() {
+                if !shards[i].1 {
                     parity_missing.push(i);
                 }
             }
@@ -351,7 +351,7 @@ impl CM256ReedSolomon {
                 let mut blocks: SmallVec<[CM256Block; 32]> =
                     SmallVec::with_capacity(self.data_shard_count);
                 for i in 0..self.data_shard_count {
-                    let v = shards[i].as_ref().unwrap();
+                    let v = shards[i].0.as_ref();
                     blocks.push(CM256Block {
                         block: v.as_ptr() as *mut c_void,
                         index: i as u8,
@@ -374,7 +374,7 @@ impl CM256ReedSolomon {
                 Self::encode_blocks_into(params, &mut blocks, self.data_shard_count, &targets);
 
                 for (buf, &idx) in bufs.into_iter().zip(parity_missing.iter()) {
-                    shards[idx] = Some(buf);
+                    shards[idx].0.as_mut().copy_from_slice(&buf);
                 }
             }
         }

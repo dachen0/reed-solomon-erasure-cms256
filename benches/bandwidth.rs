@@ -76,10 +76,10 @@ fn rs_reconstruct_benchmark(
         // Construct the parity shards
         rs.encode(&mut shards).unwrap();
 
-        let mut calculated: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
+        let mut calculated: Vec<(Vec<u8>, bool)> = shards.into_iter().map(|s| (s, true)).collect();
 
         b.iter(|| {
-            (0..delete).for_each(|i| calculated[i] = None);
+            (0..delete).for_each(|i| calculated[i].1 = false);
             rs.reconstruct(black_box(&mut calculated)).unwrap();
         });
     });
