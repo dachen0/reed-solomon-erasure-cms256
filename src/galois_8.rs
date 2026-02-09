@@ -48,6 +48,14 @@ impl crate::Field for Field {
 }
 
 /// Type alias of ReedSolomon over GF(2^8).
+///
+/// When the `std` feature is enabled (the default) this uses the cm256
+/// C++ backend (Cauchy MDS GF(256)) for SIMD-accelerated throughput.
+/// In `no_std` builds, it falls back to the pure-Rust generic implementation.
+#[cfg(feature = "std")]
+pub type ReedSolomon = crate::cm256::CM256ReedSolomon;
+
+#[cfg(not(feature = "std"))]
 pub type ReedSolomon = crate::ReedSolomon<Field>;
 
 /// Type alias of ShardByShard over GF(2^8).

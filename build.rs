@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-#[cfg(feature = "simd-accel")]
 extern crate cc;
 
 const FIELD_SIZE: usize = 256;
@@ -190,7 +189,20 @@ fn compile_simd_c() {
 )))]
 fn compile_simd_c() {}
 
+fn compile_cm256() {
+    cc::Build::new()
+        .cpp(true)
+        .opt_level(3)
+        .flag_if_supported("-std=c++11")
+        .flag_if_supported("-march=native")
+        .include("cm256/include")
+        .file("cm256/src/gf256.cpp")
+        .file("cm256/src/cm256.cpp")
+        .compile("cm256");
+}
+
 fn main() {
+    compile_cm256();
     compile_simd_c();
     write_tables();
 }
