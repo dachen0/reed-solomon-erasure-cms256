@@ -32,6 +32,9 @@ mod core;
 mod errors;
 mod matrix;
 
+#[cfg(feature = "isa-l")]
+mod isa_l;
+
 #[cfg(test)]
 mod tests;
 
@@ -115,6 +118,17 @@ pub trait Field: Sized {
         for (i, o) in input.iter().zip(out) {
             *o = Self::add(o.clone(), Self::mul(elem.clone(), i.clone()))
         }
+    }
+
+    /// Optionally encode multiple output slices using a backend-specific fast path.
+    /// Returns `true` when the backend handled the operation.
+    fn code_some_slices<T: AsRef<[Self::Elem]>, U: AsMut<[Self::Elem]>>(
+        _matrix_rows: &[&[Self::Elem]],
+        _inputs: &[T],
+        _outputs: &mut [U],
+        _aligned: bool,
+    ) -> bool {
+        false
     }
 }
 

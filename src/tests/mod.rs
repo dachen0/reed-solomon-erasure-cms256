@@ -13,6 +13,194 @@ mod galois_16;
 type ReedSolomon = crate::ReedSolomon<galois_8::Field>;
 type ShardByShard<'a> = crate::ShardByShard<'a, galois_8::Field>;
 
+#[cfg(feature = "isa-l")]
+mod isa_l_vs_gf8_tests {
+    use super::fill_random;
+    use crate::galois_8;
+    use crate::ReedSolomon;
+    use std::alloc::{alloc_zeroed, dealloc, Layout};
+    use std::ptr::NonNull;
+    use std::slice;
+
+    const ISA_L_ALIGN_BYTES: usize = 32;
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn is_isal_cpu_supported() -> bool {
+        std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("gfni")
+    }
+
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    fn is_isal_cpu_supported() -> bool {
+        false
+    }
+
+    struct AlignedShard {
+        ptr: NonNull<u8>,
+        len: usize,
+        layout: Layout,
+    }
+
+    impl AlignedShard {
+        fn new(len: usize, align: usize) -> Self {
+            let layout = Layout::from_size_align(len, align).expect("valid layout");
+            let ptr = unsafe { alloc_zeroed(layout) };
+            let ptr = NonNull::new(ptr).expect("allocation failed");
+            Self { ptr, len, layout }
+        }
+
+        fn as_slice(&self) -> &[u8] {
+            unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        }
+
+        fn as_mut_slice(&mut self) -> &mut [u8] {
+            unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        }
+    }
+
+    impl AsRef<[u8]> for AlignedShard {
+        fn as_ref(&self) -> &[u8] {
+            self.as_slice()
+        }
+    }
+
+    impl AsMut<[u8]> for AlignedShard {
+        fn as_mut(&mut self) -> &mut [u8] {
+            self.as_mut_slice()
+        }
+    }
+
+    impl Drop for AlignedShard {
+        fn drop(&mut self) {
+            unsafe { dealloc(self.ptr.as_ptr(), self.layout) };
+        }
+    }
+
+    struct UnalignedShard {
+        buf: Vec<u8>,
+        offset: usize,
+    }
+
+    impl UnalignedShard {
+        fn new(len: usize) -> Self {
+            let mut buf = vec![0u8; len + 1];
+            let offset = 1;
+            buf[offset..].fill(0);
+            Self { buf, offset }
+        }
+
+        fn as_slice(&self) -> &[u8] {
+            &self.buf[self.offset..]
+        }
+
+        fn as_mut_slice(&mut self) -> &mut [u8] {
+            &mut self.buf[self.offset..]
+        }
+    }
+
+    impl AsRef<[u8]> for UnalignedShard {
+        fn as_ref(&self) -> &[u8] {
+            self.as_slice()
+        }
+    }
+
+    impl AsMut<[u8]> for UnalignedShard {
+        fn as_mut(&mut self) -> &mut [u8] {
+            self.as_mut_slice()
+        }
+    }
+
+    fn make_aligned_shards(count: usize, len: usize) -> Vec<AlignedShard> {
+        let mut shards = Vec::with_capacity(count);
+        for _ in 0..count {
+            shards.push(AlignedShard::new(len, ISA_L_ALIGN_BYTES));
+        }
+        shards
+    }
+
+    fn make_unaligned_shards(count: usize, len: usize) -> Vec<UnalignedShard> {
+        let mut shards = Vec::with_capacity(count);
+        for _ in 0..count {
+            shards.push(UnalignedShard::new(len));
+        }
+        shards
+    }
+
+    #[test]
+    fn isa_l_encode_matches_gf8() {
+        if !is_isal_cpu_supported() {
+            return;
+        }
+
+        let data = 6;
+        let parity = 3;
+        let total = data + parity;
+        let per_shard = 1024;
+
+        let r = ReedSolomon::<galois_8::Field>::new(data, parity).unwrap();
+
+        let mut baseline = make_unaligned_shards(total, per_shard);
+        for shard in baseline.iter_mut().take(data) {
+            fill_random(shard.as_mut());
+        }
+
+        let mut aligned = make_aligned_shards(total, per_shard);
+        for i in 0..data {
+            aligned[i].as_mut().copy_from_slice(baseline[i].as_ref());
+        }
+
+        r.encode(&mut baseline).unwrap();
+        r.encode(&mut aligned).unwrap();
+
+        for i in 0..total {
+            assert_eq!(baseline[i].as_ref(), aligned[i].as_ref());
+        }
+    }
+
+    #[test]
+    fn isa_l_reconstruct_matches_gf8() {
+        if !is_isal_cpu_supported() {
+            return;
+        }
+
+        let data = 10;
+        let parity = 4;
+        let total = data + parity;
+        let per_shard = 1024;
+
+        let r = ReedSolomon::<galois_8::Field>::new(data, parity).unwrap();
+
+        let mut baseline = make_unaligned_shards(total, per_shard);
+        for shard in baseline.iter_mut().take(data) {
+            fill_random(shard.as_mut());
+        }
+
+        let mut aligned = make_aligned_shards(total, per_shard);
+        for i in 0..data {
+            aligned[i].as_mut().copy_from_slice(baseline[i].as_ref());
+        }
+
+        r.encode(&mut baseline).unwrap();
+        r.encode(&mut aligned).unwrap();
+
+        let missing = [1usize, 3usize, data + 1];
+
+        let mut baseline = baseline.into_iter().map(|s| (s, true)).collect::<Vec<_>>();
+        let mut aligned = aligned.into_iter().map(|s| (s, true)).collect::<Vec<_>>();
+
+        for &idx in &missing {
+            baseline[idx].1 = false;
+            aligned[idx].1 = false;
+        }
+
+        r.reconstruct(&mut baseline).unwrap();
+        r.reconstruct(&mut aligned).unwrap();
+
+        for i in 0..total {
+            assert_eq!(baseline[i].0.as_ref(), aligned[i].0.as_ref());
+        }
+    }
+}
+
 macro_rules! make_random_shards {
     ($per_shard:expr, $size:expr) => {{
         let mut shards = Vec::with_capacity(20);

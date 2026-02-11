@@ -44,6 +44,15 @@ environment variable `RUST_REED_SOLOMON_ERASURE_ARCH` during build to force comp
 GCC/Clang). Even on x86-64 you can achieve better performance by setting it to `native`, but it will stop running on
 older CPUs, YMMV.
 
+Alternatively, you can enable the Intel ISA-L backend for GF(2^8) encoding/decoding:
+```toml
+[dependencies]
+reed-solomon-erasure = { version = "4.0", features = [ "isa-l" ] }
+```
+This uses the bundled `isa-l-rust` bindings, which build ISA-L via CMake. You will need a C toolchain
+and `cmake` available. The ISA-L path is only used when all shard buffers are 32-byte aligned and
+lengths are multiples of 32 bytes; otherwise it falls back to the existing implementation.
+
 ## Example
 ```rust
 #[macro_use(shards)]

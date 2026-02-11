@@ -45,6 +45,23 @@ impl crate::Field for Field {
     fn mul_slice_add(c: u8, input: &[u8], out: &mut [u8]) {
         mul_slice_xor(c, input, out)
     }
+
+    fn code_some_slices<T: AsRef<[u8]>, U: AsMut<[u8]>>(
+        matrix_rows: &[&[u8]],
+        inputs: &[T],
+        outputs: &mut [U],
+        aligned: bool,
+    ) -> bool {
+        // if crate::isa_l::isal_min_shards() < inputs.len() + outputs.len()
+        #[cfg(feature = "isa-l")]
+        {
+            return crate::isa_l::try_code_some_slices(matrix_rows, inputs, outputs, aligned);
+        }
+        {
+            let _ = (matrix_rows, inputs, outputs, aligned);
+            false
+        }
+    }
 }
 
 /// Type alias of ReedSolomon over GF(2^8).

@@ -161,22 +161,8 @@ fn compile_simd_c() {
     let mut build = cc::Build::new();
     build.opt_level(3);
 
-    match env::var("RUST_REED_SOLOMON_ERASURE_ARCH") {
-        Ok(arch) => {
-            // Use explicitly specified environment variable as architecture.
-            build.flag(&format!("-march={}", arch));
-        }
-        Err(_error) => {
-            // On x86-64 enabling Haswell architecture unlocks useful instructions and improves performance
-            // dramatically while allowing it to run ony modern CPU.
-            match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str(){
-                "x86_64"  => { build.flag(&"-march=haswell"); },
-                _         => ()
-            }
-        }
-    }
-
     build
+        .flag("-march=native")
         .flag("-std=c11")
         .file("simd_c/reedsolomon.c")
         .compile("reedsolomon");

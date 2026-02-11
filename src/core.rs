@@ -11,6 +11,7 @@ use crate::errors::SBSError;
 
 use crate::matrix::Matrix;
 
+use core::mem::size_of;
 use lru::LruCache;
 
 #[cfg(feature = "std")]
@@ -22,6 +23,44 @@ use super::Field;
 use super::ReconstructShard;
 
 const DATA_DECODE_MATRIX_CACHE_CAPACITY: usize = 254;
+const ISA_L_ALIGN_BYTES: usize = 32;
+
+fn is_isal_aligned<E, T: AsRef<[E]>, U: AsMut<[E]>>(inputs: &[T], outputs: &mut [U]) -> bool {
+    if inputs.is_empty() || outputs.is_empty() {
+        return true;
+    }
+
+    let len = inputs[0].as_ref().len();
+    let len_bytes = match len.checked_mul(size_of::<E>()) {
+        Some(v) => v,
+        None => return false,
+    };
+    if len_bytes % ISA_L_ALIGN_BYTES != 0 {
+        return false;
+    }
+
+    for input in inputs.iter() {
+        let slice = input.as_ref();
+        if slice.len() != len {
+            return false;
+        }
+        if (slice.as_ptr() as usize) % ISA_L_ALIGN_BYTES != 0 {
+            return false;
+        }
+    }
+
+    for output in outputs.iter_mut() {
+        let slice = output.as_mut();
+        if slice.len() != len {
+            return false;
+        }
+        if (slice.as_ptr() as usize) % ISA_L_ALIGN_BYTES != 0 {
+            return false;
+        }
+    }
+
+    true
+}
 
 // /// Parameters for parallelism.
 // #[derive(PartialEq, Debug, Clone, Copy)]
@@ -484,6 +523,17 @@ impl<F: Field> ReedSolomon<F> {
         inputs: &[T],
         outputs: &mut [U],
     ) {
+        let aligned = if cfg!(feature = "isa-l") {
+            is_isal_aligned(inputs, outputs)
+        } else {
+            false
+        };
+        if aligned {
+            if F::code_some_slices(matrix_rows, inputs, outputs, aligned) {
+                return;
+            }
+        }
+
         for i_input in 0..self.data_shard_count {
             self.code_single_slice(matrix_rows, i_input, inputs[i_input].as_ref(), outputs);
         }
