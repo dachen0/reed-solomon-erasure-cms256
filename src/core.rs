@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -12,17 +11,10 @@ use crate::errors::SBSError;
 use crate::matrix::Matrix;
 
 use core::mem::size_of;
-use lru::LruCache;
-
-#[cfg(feature = "std")]
-use parking_lot::Mutex;
-#[cfg(not(feature = "std"))]
-use spin::Mutex;
 
 use super::Field;
 use super::ReconstructShard;
 
-const DATA_DECODE_MATRIX_CACHE_CAPACITY: usize = 254;
 const ISA_L_ALIGN_BYTES: usize = 32;
 
 fn is_isal_aligned<E, T: AsRef<[E]>, U: AsMut<[E]>>(inputs: &[T], outputs: &mut [U]) -> bool {
@@ -385,7 +377,6 @@ pub struct ReedSolomon<F: Field> {
     parity_shard_count: usize,
     total_shard_count: usize,
     matrix: Matrix<F>,
-    data_decode_matrix_cache: Mutex<LruCache<Vec<usize>, Arc<Matrix<F>>>>,
 }
 
 impl<F: Field> Clone for ReedSolomon<F> {
@@ -501,7 +492,6 @@ impl<F: Field> ReedSolomon<F> {
             parity_shard_count: parity_shards,
             total_shard_count: total_shards,
             matrix,
-            data_decode_matrix_cache: Mutex::new(LruCache::new(DATA_DECODE_MATRIX_CACHE_CAPACITY)),
         })
     }
 
@@ -747,14 +737,7 @@ impl<F: Field> ReedSolomon<F> {
     fn get_data_decode_matrix(
         &self,
         valid_indices: &[usize],
-        invalid_indices: &[usize],
-    ) -> Arc<Matrix<F>> {
-        {
-            let mut cache = self.data_decode_matrix_cache.lock();
-            if let Some(entry) = cache.get(invalid_indices) {
-                return entry.clone();
-            }
-        }
+    ) -> Matrix<F> {
         // Pull out the rows of the matrix that correspond to the shards that
         // we have and build a square matrix. This matrix could be used to
         // generate the shards that we have from the original data.
@@ -769,14 +752,7 @@ impl<F: Field> ReedSolomon<F> {
         // we want to decode. Note that since this matrix maps back to the
         // original data, it can be used to create a data shard, but not a
         // parity shard.
-        let data_decode_matrix = Arc::new(sub_matrix.invert().unwrap());
-        // Cache the inverted matrix for future use keyed on the indices of the
-        // invalid rows.
-        {
-            let data_decode_matrix = data_decode_matrix.clone();
-            let mut cache = self.data_decode_matrix_cache.lock();
-            cache.put(Vec::from(invalid_indices), data_decode_matrix);
-        }
+        let data_decode_matrix = sub_matrix.invert().unwrap();
         data_decode_matrix
     }
 
@@ -890,7 +866,7 @@ impl<F: Field> ReedSolomon<F> {
             }
         }
 
-        let data_decode_matrix = self.get_data_decode_matrix(&valid_indices, &invalid_indices);
+        let data_decode_matrix = self.get_data_decode_matrix(&valid_indices);
 
         // Re-create any data shards that were missing.
         //
