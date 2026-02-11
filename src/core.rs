@@ -513,15 +513,10 @@ impl<F: Field> ReedSolomon<F> {
         inputs: &[T],
         outputs: &mut [U],
     ) {
-        let aligned = if cfg!(feature = "isa-l") {
-            is_isal_aligned(inputs, outputs)
-        } else {
-            false
-        };
-        if aligned {
-            if F::code_some_slices(matrix_rows, inputs, outputs, aligned) {
-                return;
-            }
+        #[cfg(feature = "isa-l")]
+        debug_assert!(is_isal_aligned(inputs, outputs));
+        if F::code_some_slices(matrix_rows, inputs, outputs) {
+            return;
         }
 
         for i_input in 0..self.data_shard_count {

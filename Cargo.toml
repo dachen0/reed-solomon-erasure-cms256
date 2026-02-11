@@ -28,7 +28,6 @@ default = ["std"] # simd off by default
 std = ["parking_lot"]
 simd-accel = ["cc", "libc"]
 isa-l = ["std", "isa-l-rust"]
-avx512 = []
 
 [badges]
 travis-ci = { repository = "darrenldl/reed-solomon-erasure" }

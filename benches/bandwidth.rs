@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use std::convert::TryInto;
 
 use criterion::measurement::WallTime;
@@ -28,6 +29,17 @@ fn create_shards(block_size: usize, data: usize, parity: usize) -> Shards {
         vec.resize(block_size, 0);
         vec
     });
+
+    // Mem align the shards
+    shards = shards.into_iter().map(|shard| {
+        let layout = Layout::from_size_align(shard.len(), 32).unwrap();
+        // Safety:
+        // layout size is nonzero
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        let mut aligned_vec = unsafe { Vec::from_raw_parts(ptr, shard.len(), shard.len()) };
+        aligned_vec.copy_from_slice(&shard);
+        aligned_vec
+    }).collect();
 
     shards
 }

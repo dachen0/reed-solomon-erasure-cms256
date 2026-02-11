@@ -50,15 +50,13 @@ impl crate::Field for Field {
         matrix_rows: &[&[u8]],
         inputs: &[T],
         outputs: &mut [U],
-        aligned: bool,
     ) -> bool {
-        // if crate::isa_l::isal_min_shards() < inputs.len() + outputs.len()
         #[cfg(feature = "isa-l")]
         {
-            return crate::isa_l::try_code_some_slices(matrix_rows, inputs, outputs, aligned);
+            return crate::isa_l::try_code_some_slices(matrix_rows, inputs, outputs);
         }
         {
-            let _ = (matrix_rows, inputs, outputs, aligned);
+            let _ = (matrix_rows, inputs, outputs);
             false
         }
     }

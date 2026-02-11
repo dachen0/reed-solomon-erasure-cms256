@@ -4,27 +4,12 @@ use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
-#[cfg(not(feature = "avx512"))]
-use isa_l_rust::ec_encode_data_avx2_gfni;
-#[cfg(feature = "avx512")]
-use isa_l_rust::ec_encode_data_avx512_gfni;
-use isa_l_rust::ec_init_tables_gfni;
+use isa_l_rust::{ec_encode_data_avx512_gfni, ec_init_tables_gfni};
 use std::os::raw::c_int;
 use std::sync::OnceLock;
 
 const ISA_L_TABLE_BYTES_PER_COEFF: usize = 32;
 const ISA_L_ALIGN_BYTES: usize = 32;
-const ISA_L_MIN_SHARDS_DEFAULT: usize = 16;
-
-pub(crate) fn isal_min_shards() -> usize {
-    static MIN_SHARDS: OnceLock<usize> = OnceLock::new();
-    *MIN_SHARDS.get_or_init(|| {
-        std::env::var("RSE_ISA_L_MIN_SHARDS")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(ISA_L_MIN_SHARDS_DEFAULT)
-    })
-}
 
 struct AlignedBuf {
     ptr: NonNull<u8>,
@@ -79,7 +64,6 @@ pub(crate) fn try_code_some_slices<T: AsRef<[u8]>, U: AsMut<[u8]>>(
     matrix_rows: &[&[u8]],
     inputs: &[T],
     outputs: &mut [U],
-    aligned: bool,
 ) -> bool {
     let k = inputs.len();
     let rows = outputs.len();
@@ -88,7 +72,6 @@ pub(crate) fn try_code_some_slices<T: AsRef<[u8]>, U: AsMut<[u8]>>(
         return true;
     }
 
-    debug_assert!(aligned);
     debug_assert_eq!(matrix_rows.len(), rows);
 
     let len = inputs[0].as_ref().len();
@@ -146,17 +129,7 @@ pub(crate) fn try_code_some_slices<T: AsRef<[u8]>, U: AsMut<[u8]>>(
             coeffs.as_ptr() as *mut u8,
             gftbls.as_ptr(),
         );
-        #[cfg(feature = "avx512")]
         ec_encode_data_avx512_gfni(
-            len as c_int,
-            k as c_int,
-            rows as c_int,
-            gftbls.as_ptr(),
-            data_ptrs.as_mut_ptr(),
-            coding_ptrs.as_mut_ptr(),
-        );
-        #[cfg(not(feature = "avx512"))]
-        ec_encode_data_avx2_gfni(
             len as c_int,
             k as c_int,
             rows as c_int,

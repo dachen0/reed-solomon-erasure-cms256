@@ -126,7 +126,6 @@ pub trait Field: Sized {
         _matrix_rows: &[&[Self::Elem]],
         _inputs: &[T],
         _outputs: &mut [U],
-        _aligned: bool,
     ) -> bool {
         false
     }
