@@ -1,8 +1,10 @@
 extern crate alloc;
 
+use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use hashbrown::HashMap;
 use smallvec::SmallVec;
 
 use crate::errors::Error;
@@ -12,6 +14,62 @@ use crate::matrix::Matrix;
 
 use super::Field;
 use super::ReconstructShard;
+
+const PRECOMPUTE_SHARD_THRESHOLD: usize = 16;
+
+fn enumerate_d_subsets(
+    n: usize,
+    d: usize,
+    current: &mut SmallVec<[usize; 32]>,
+    f: &mut impl FnMut(&[usize]),
+) {
+    if d == 0 {
+        f(current);
+        return;
+    }
+    let start = current.last().map_or(0, |&v| v + 1);
+    for i in start..=(n - d) {
+        current.push(i);
+        enumerate_d_subsets(n, d - 1, current, f);
+        current.pop();
+    }
+}
+
+/// Precomputed decode matrices for all possible valid-shard-index combinations.
+///
+/// Keyed on the exact `valid_indices` slice used during reconstruction, so lookup
+/// is a single hash map get — no combinatorial math required.
+#[derive(Debug)]
+pub struct PrecomputedDecodeMatrices<F: Field> {
+    map: HashMap<Vec<usize>, Rc<Matrix<F>>>,
+}
+
+impl<F: Field> PrecomputedDecodeMatrices<F> {
+    fn build(data_shard_count: usize, total_shard_count: usize, matrix: &Matrix<F>) -> Self {
+        let mut map = HashMap::new();
+        let mut current = SmallVec::new();
+
+        enumerate_d_subsets(total_shard_count, data_shard_count, &mut current, &mut |subset| {
+            let mut sub_matrix = Matrix::new(data_shard_count, data_shard_count);
+            for (row, &valid_idx) in subset.iter().enumerate() {
+                for c in 0..data_shard_count {
+                    sub_matrix.set(row, c, matrix.get(valid_idx, c));
+                }
+            }
+            if let Ok(inverted) = sub_matrix.invert() {
+                map.insert(subset.to_vec(), Rc::new(inverted));
+            }
+        });
+
+        PrecomputedDecodeMatrices { map }
+    }
+
+    fn get(&self, valid_indices: &[usize]) -> &Rc<Matrix<F>> {
+        self.map
+            .get(valid_indices)
+            .expect("decode matrix requested for singular or unrecoverable shard pattern")
+    }
+}
 
 // /// Parameters for parallelism.
 // #[derive(PartialEq, Debug, Clone, Copy)]
@@ -336,6 +394,7 @@ pub struct ReedSolomon<F: Field> {
     parity_shard_count: usize,
     total_shard_count: usize,
     matrix: Matrix<F>,
+    precomputed_decode_matrices: Option<PrecomputedDecodeMatrices<F>>,
 }
 
 impl<F: Field> Clone for ReedSolomon<F> {
@@ -443,14 +502,17 @@ impl<F: Field> ReedSolomon<F> {
         }
 
         let total_shards = data_shards + parity_shards;
-
         let matrix = Self::build_matrix(data_shards, total_shards);
+
+        // Precompute when C(total, d) * d^2 bytes stays under 32 MB.
+        let precomputed_decode_matrices = if total_shards <= PRECOMPUTE_SHARD_THRESHOLD { Some(PrecomputedDecodeMatrices::build(data_shards, total_shards, &matrix)) } else { None };
 
         Ok(ReedSolomon {
             data_shard_count: data_shards,
             parity_shard_count: parity_shards,
             total_shard_count: total_shards,
             matrix,
+            precomputed_decode_matrices,
         })
     }
 
@@ -682,10 +744,11 @@ impl<F: Field> ReedSolomon<F> {
         self.reconstruct_internal(slices, true)
     }
 
-    fn get_data_decode_matrix(
-        &self,
-        valid_indices: &[usize],
-    ) -> Matrix<F> {
+    fn get_data_decode_matrix(&self, valid_indices: &[usize]) -> Rc<Matrix<F>> {
+        if let Some(ref precomputed) = self.precomputed_decode_matrices {
+            return precomputed.get(valid_indices).clone();
+        }
+
         // Pull out the rows of the matrix that correspond to the shards that
         // we have and build a square matrix. This matrix could be used to
         // generate the shards that we have from the original data.
@@ -700,7 +763,7 @@ impl<F: Field> ReedSolomon<F> {
         // we want to decode. Note that since this matrix maps back to the
         // original data, it can be used to create a data shard, but not a
         // parity shard.
-        sub_matrix.invert().unwrap()
+        Rc::new(sub_matrix.invert().unwrap())
     }
 
     fn reconstruct_internal<T: ReconstructShard<F>>(
